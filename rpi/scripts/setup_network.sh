@@ -176,21 +176,4 @@ log ""
 log "✓ Ready for device provisioning"
 
 
-echo 1 > /proc/sys/net/ipv4/ip_forward
-
-# Masquerade : le trafic WiFi sortant passe par Ethernet
-iptables -t nat -C POSTROUTING -o "$IFACE_ETH" -j MASQUERADE 2>/dev/null || \
-    iptables -t nat -A POSTROUTING -o "$IFACE_ETH" -j MASQUERADE
-
-iptables -C FORWARD -i "$IFACE_WIFI" -o "$IFACE_ETH" -j ACCEPT 2>/dev/null || \
-    iptables -A FORWARD -i "$IFACE_WIFI" -o "$IFACE_ETH" -j ACCEPT
-
-# --- Démarrer dnsmasq ---
-log "Démarrage dnsmasq..."
-systemctl restart dnsmasq
-
-# --- Démarrer hostapd ---
-log "Démarrage hostapd (hotspot $WIFI_SSID)..."
-systemctl restart hostapd
-
 log "=== setup_network.sh terminé. RPI IP: $RPI_IP ==="
