@@ -1,0 +1,84 @@
+version: "3.9"
+
+# ============================================================
+# Eldersafe - Docker Compose (Raspberry Pi)
+# Services : FastAPI + Socket Server + MySQL
+# Note : hostapd et le provisioner tournent sur l'HÔTE
+# ============================================================
+
+services:
+
+  # --- Base de données MySQL ---
+  mysql:
+    image: mysql:8.0
+    container_name: eldersafe-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-eldersafe_db}
+      MYSQL_USER: ${MYSQL_USER:-eldersafe}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/001_init_iot_tables.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    ports:
+      - "127.0.0.1:3306:3306"    # Exposé uniquement en local (pas sur le réseau WiFi)
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - eldersafe-internal
+
+  # --- FastAPI backend ---
+  fastapi:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: eldersafe-fastapi
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+aiomysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      SOCKET_PORT: ${SOCKET_PORT:-9000}
+      SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
+    ports:
+      - "127.0.0.1:8000:8000"    # Accessible uniquement en local
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - eldersafe-internal
+    volumes:
+      - ./api:/app:ro
+
+  # --- Socket Server TCP (ESP32 → RPI) ---
+  socket-server:
+    build:
+      context: ./socket_server
+      dockerfile: Dockerfile
+    container_name: eldersafe-socket
+    restart: unless-stopped
+    environment:
+      SOCKET_PORT: ${SOCKET_PORT:-9000}
+      FASTAPI_BASE_URL: http://fastapi:8000
+    ports:
+      # Exposé sur le réseau WiFi interne (192.168.10.0/24) UNIQUEMENT
+      - "192.168.10.1:9000:9000"
+    depends_on:
+      - fastapi
+    networks:
+      - eldersafe-internal
+    volumes:
+      - ./socket_server:/app:ro
+
+volumes:
+  mysql_data:
+    driver: local
+
+networks:
+  eldersafe-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
