@@ -89,10 +89,9 @@ log "✓ Routing enabled"
 # --- Start hostapd ---
 log "📶 Starting hostapd..."
 
-# Generate hostapd config if missing
-if [ ! -f "$ELDERSAFE_DIR/hostapd/hostapd.conf" ]; then
-    mkdir -p "$ELDERSAFE_DIR/hostapd"
-    cat > "$ELDERSAFE_DIR/hostapd/hostapd.conf" << HOSTAPD_CONF
+# Always regenerate hostapd config (don't rely on templates)
+mkdir -p "$ELDERSAFE_DIR/hostapd"
+cat > "$ELDERSAFE_DIR/hostapd/hostapd.conf" << HOSTAPD_CONF
 interface=$WIFI_INTERFACE
 driver=nl80211
 ssid=$WIFI_SSID
@@ -106,8 +105,8 @@ wpa_pairwise=CCMP
 auth_algs=1
 max_num_sta=20
 HOSTAPD_CONF
-    log "   Generated hostapd.conf"
-fi
+
+log "   ✓ Generated hostapd.conf"
 
 # Stop any existing hostapd instances
 killall hostapd 2>/dev/null || true
@@ -126,22 +125,21 @@ log "✓ hostapd started"
 # --- Start dnsmasq ---
 log "🌐 Starting dnsmasq..."
 
-# Generate dnsmasq config if missing
-if [ ! -f "$ELDERSAFE_DIR/dnsmasq/dnsmasq.conf" ]; then
-    mkdir -p "$ELDERSAFE_DIR/dnsmasq"
-    cat > "$ELDERSAFE_DIR/dnsmasq/dnsmasq.conf" << DNSMASQ_CONF
-interface=$WIFI_INTERFACE
-listen-address=$RPI_IP
+# Always regenerate dnsmasq config (don't rely on templates)
+mkdir -p "$ELDERSAFE_DIR/dnsmasq"
+cat > "$ELDERSAFE_DIR/dnsmasq/dnsmasq.conf" << 'DNSMASQ_CONF'
+interface=wlan0
+listen-address=192.168.10.1
 dhcp-range=192.168.10.10,192.168.10.249,24h
-dhcp-option=option:router,$RPI_IP
-dhcp-option=option:dns-server,$RPI_IP
+dhcp-option=option:router,192.168.10.1
+dhcp-option=option:dns-server,192.168.10.1
 server=8.8.8.8
 server=8.8.4.4
-address=/#/$RPI_IP
+address=/#/192.168.10.1
 log-dhcp
 DNSMASQ_CONF
-    log "   Generated dnsmasq.conf"
-fi
+
+log "   ✓ Generated dnsmasq.conf"
 
 # Stop any existing dnsmasq instances
 killall dnsmasq 2>/dev/null || true
@@ -154,6 +152,13 @@ if [ ! -x /usr/sbin/dnsmasq ]; then
 fi
 
 /usr/sbin/dnsmasq -C "$ELDERSAFE_DIR/dnsmasq/dnsmasq.conf" 2>/dev/null
+if [ $? -ne 0 ]; then
+    log "❌ ERROR: dnsmasq failed to start"
+    echo "dnsmasq error output:" >&2
+    /usr/sbin/dnsmasq -C "$ELDERSAFE_DIR/dnsmasq/dnsmasq.conf"
+    exit 1
+fi
+
 sleep 1
 log "✓ dnsmasq started"
 

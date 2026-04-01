@@ -117,16 +117,24 @@ mkdir -p "$ELDERSAFE_DIR"/hostapd
 mkdir -p "$ELDERSAFE_DIR"/dnsmasq
 mkdir -p /etc/systemd/system
 
-# --- Copier les fichiers de config hostapd/dnsmasq ---
-if [ -f "$REPO_ROOT/rpi/hostapd/hostapd.conf" ]; then
-    cp "$REPO_ROOT/rpi/hostapd/hostapd.conf" "$ELDERSAFE_DIR/hostapd/"
-    log "✓ hostapd.conf copié"
+# Note: hostapd.conf and dnsmasq.conf are generated dynamically by setup_network.sh
+# Do not copy templates - they will be auto-generated at boot time with proper values
+log "✓ Config directories created (will be populated at boot)"
+
+# --- Copier et rendre exécutables les scripts ---
+log "📝 Copie des scripts..."
+if [ -f "$REPO_ROOT/rpi/scripts/setup_network.sh" ]; then
+    cp "$REPO_ROOT/rpi/scripts/setup_network.sh" "$ELDERSAFE_DIR/setup_network.sh"
+    chmod 755 "$ELDERSAFE_DIR/setup_network.sh"
+    log "✓ setup_network.sh copié et rendu exécutable"
 fi
 
-if [ -f "$REPO_ROOT/rpi/hostapd/dnsmasq.conf" ]; then
-    cp "$REPO_ROOT/rpi/hostapd/dnsmasq.conf" "$ELDERSAFE_DIR/dnsmasq/"
-    log "✓ dnsmasq.conf copié"
+if [ -f "$REPO_ROOT/rpi/provisioning/provisioner.py" ]; then
+    cp "$REPO_ROOT/rpi/provisioning/provisioner.py" "$ELDERSAFE_DIR/provisioner.py"
+    chmod 755 "$ELDERSAFE_DIR/provisioner.py"
+    log "✓ provisioner.py copié et rendu exécutable"
 fi
+
 
 # --- Copier et rendre exécutables les scripts ---
 log "📝 Copie des scripts..."
