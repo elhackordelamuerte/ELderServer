@@ -17,8 +17,9 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy server code
+# Copy server code and assets
 COPY socket_server.py .
+COPY dashboard.html .
 
 # Expose port
 EXPOSE 9000

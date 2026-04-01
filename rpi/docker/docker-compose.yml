@@ -68,8 +68,8 @@ services:
   # --- Socket Server TCP (ESP32 → RPI) ---
   socket-server:
     build:
-      context: ./socket_server
-      dockerfile: Dockerfile
+      context: ../socket_server
+      dockerfile: ../docker/socket_server/Dockerfile
     container_name: eldersafe-socket
     restart: unless-stopped
     environment:
