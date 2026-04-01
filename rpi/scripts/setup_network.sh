@@ -8,7 +8,6 @@ set -e
 
 LOG="/var/log/eldersafe/setup_network.log"
 ELDERSAFE_DIR="/etc/eldersafe"
-CONFIG_DIR="$ELDERSAFE_DIR"
 
 mkdir -p /var/log/eldersafe
 
@@ -18,68 +17,82 @@ log() {
 
 log "=== Eldersafe Network Setup (systemd boot) ==="
 
-# --- Load environment variables ---
-if [ -f "$ELDERSAFE_DIR/.env" ]; then
-    export $(grep -v '^#' "$ELDERSAFE_DIR/.env" | xargs)
-    log "✓ Config chargée depuis $ELDERSAFE_DIR/.env"
-else
-    log "❌ Fichier config manquant: $ELDERSAFE_DIR/.env"
+# --- Load environment variables (with error checking) ---
+if [ ! -f "$ELDERSAFE_DIR/.env" ]; then
+    log "❌ ERROR: Config file missing: $ELDERSAFE_DIR/.env"
+    echo "ERROR: Missing $ELDERSAFE_DIR/.env - run install.sh first" >&2
     exit 1
 fi
 
-WIFI_SSID="${WIFI_SSID:-ELDERSAFE_SECURE}"
-WIFI_PASSWORD="${WIFI_PASSWORD}"
-RPI_IP="${RPI_IP:-192.168.10.1}"
-RPI_SUBNET="${RPI_IP%.*}.0/24"
-ETH_INTERFACE="${ETH_INTERFACE:-eth0}"
-WIFI_INTERFACE="wlan0"
+# Source the environment file
+set -a
+source "$ELDERSAFE_DIR/.env"
+set +a
 
-# --- Déterminer automatiquement l'interface Ethernet ---
-if [ ! -d "/sys/class/net/$ETH_INTERFACE" ]; then
-    ETH_INTERFACE=$(ip -4 route show | grep '^default' | awk '{print $5}' | head -1)
-    if [ -z "$ETH_INTERFACE" ]; then
-        ETH_INTERFACE="eth0"
-    fi
-    log "   Interface Ethernet détectée : $ETH_INTERFACE"
+log "✓ Config loaded from $ELDERSAFE_DIR/.env"
+
+# Validate required variables
+if [ -z "$WIFI_SSID" ] || [ -z "$WIFI_PASSWORD" ] || [ -z "$RPI_IP" ]; then
+    log "❌ ERROR: Missing required environment variables"
+    echo "ERROR: WIFI_SSID, WIFI_PASSWORD, or RPI_IP not set in .env" >&2
+    exit 1
 fi
 
-# --- Configurer wlan0 en IP static ---
-log "📡 Configuration de $WIFI_INTERFACE..."
+WIFI_INTERFACE="wlan0"
+RPI_SUBNET="${RPI_IP%.*}.0/24"
 
-ip link set "$WIFI_INTERFACE" up
-ip addr flush dev "$WIFI_INTERFACE"
-ip addr add "$RPI_IP/24" dev "$WIFI_INTERFACE"
-ip route add "$RPI_SUBNET" dev "$WIFI_INTERFACE"
+# Detect Ethernet interface
+ETH_INTERFACE=$(ip route | grep '^default' | awk '{print $5}' | head -1)
+if [ -z "$ETH_INTERFACE" ]; then
+    ETH_INTERFACE="eth0"
+fi
+log "   Ethernet interface: $ETH_INTERFACE"
 
-log "   ✓ IP : $RPI_IP / Subnet: $RPI_SUBNET"
+# --- Ensure required tools are available ---
+required_commands=("ip" "hostapd" "dnsmasq" "iptables" "grep" "awk")
+for cmd in "${required_commands[@]}"; do
+    if ! command -v "$cmd" &> /dev/null; then
+        log "❌ ERROR: Required command not found: $cmd"
+        exit 1
+    fi
+done
 
-# --- Activer le forwarding IPv4 + iptables NAT ---
-log "🔀 Activation du routage (Ethernet ↔ WiFi)..."
+# --- Configure wlan0 with static IP ---
+log "📡 Configuring $WIFI_INTERFACE..."
+ip link set "$WIFI_INTERFACE" up 2>/dev/null || true
+ip addr flush dev "$WIFI_INTERFACE" 2>/dev/null || true
+ip addr add "$RPI_IP/24" dev "$WIFI_INTERFACE" 2>/dev/null || true
+ip route add "$RPI_SUBNET" dev "$WIFI_INTERFACE" 2>/dev/null || true
+
+log "   ✓ IP: $RPI_IP / Subnet: $RPI_SUBNET"
+
+# --- Enable IPv4 forwarding + iptables NAT ---
+log "🔀 Enabling routing (Ethernet ↔ WiFi)..."
 
 echo 1 > /proc/sys/net/ipv4/ip_forward
 
-# Flush les règles existantes
+# Flush existing rules
 iptables -t nat -F POSTROUTING 2>/dev/null || true
 iptables -F FORWARD 2>/dev/null || true
 
-# NAT: Ethernet → WiFi
+# Configure NAT
 iptables -t nat -A POSTROUTING -o "$ETH_INTERFACE" -j MASQUERADE
 iptables -A FORWARD -i "$WIFI_INTERFACE" -o "$ETH_INTERFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
 iptables -A FORWARD -i "$ETH_INTERFACE" -o "$WIFI_INTERFACE" -j ACCEPT
 
-# Sauvegarder les règles iptables
-iptables-save > /etc/iptables/rules.v4 2>/dev/null || \
-    mkdir -p /etc/iptables && iptables-save > /etc/iptables/rules.v4
+# Save iptables rules
+mkdir -p /etc/iptables
+iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 
-log "✓ Routage activé"
+log "✓ Routing enabled"
 
-# --- Configurer et démarrer hostapd ---
-log "📶 Démarrage de hostapd..."
+# --- Start hostapd ---
+log "📶 Starting hostapd..."
 
-# Générer la config hostapd si elle n'existe pas
-if [ ! -f "$CONFIG_DIR/hostapd/hostapd.conf" ]; then
-    mkdir -p "$CONFIG_DIR/hostapd"
-    cat > "$CONFIG_DIR/hostapd/hostapd.conf" << HOSTAPD_CONF
+# Generate hostapd config if missing
+if [ ! -f "$ELDERSAFE_DIR/hostapd/hostapd.conf" ]; then
+    mkdir -p "$ELDERSAFE_DIR/hostapd"
+    cat > "$ELDERSAFE_DIR/hostapd/hostapd.conf" << HOSTAPD_CONF
 interface=$WIFI_INTERFACE
 driver=nl80211
 ssid=$WIFI_SSID
@@ -91,25 +104,32 @@ wpa_passphrase=$WIFI_PASSWORD
 wpa_key_mgmt=WPA-PSK
 wpa_pairwise=CCMP
 auth_algs=1
+max_num_sta=20
 HOSTAPD_CONF
-    log "   Fichier hostapd.conf généré"
+    log "   Generated hostapd.conf"
 fi
 
-# Arrêter les instances existantes
+# Stop any existing hostapd instances
 killall hostapd 2>/dev/null || true
 sleep 1
 
-# Démarrer hostapd en daemon
-/usr/sbin/hostapd -B "$CONFIG_DIR/hostapd/hostapd.conf"
-log "✓ hostapd a démarré (PID: $!)"
+# Start hostapd
+if [ ! -x /usr/sbin/hostapd ]; then
+    log "❌ ERROR: hostapd not found or not executable at /usr/sbin/hostapd"
+    exit 1
+fi
 
-# --- Configurer et démarrer dnsmasq ---
-log "🌐 Démarrage de dnsmasq..."
+/usr/sbin/hostapd -B "$ELDERSAFE_DIR/hostapd/hostapd.conf" 2>/dev/null
+sleep 1
+log "✓ hostapd started"
 
-# Générer la config dnsmasq si elle n'existe pas
-if [ ! -f "$CONFIG_DIR/dnsmasq/dnsmasq.conf" ]; then
-    mkdir -p "$CONFIG_DIR/dnsmasq"
-    cat > "$CONFIG_DIR/dnsmasq/dnsmasq.conf" << DNSMASQ_CONF
+# --- Start dnsmasq ---
+log "🌐 Starting dnsmasq..."
+
+# Generate dnsmasq config if missing
+if [ ! -f "$ELDERSAFE_DIR/dnsmasq/dnsmasq.conf" ]; then
+    mkdir -p "$ELDERSAFE_DIR/dnsmasq"
+    cat > "$ELDERSAFE_DIR/dnsmasq/dnsmasq.conf" << DNSMASQ_CONF
 interface=$WIFI_INTERFACE
 listen-address=$RPI_IP
 dhcp-range=192.168.10.10,192.168.10.249,24h
@@ -117,45 +137,39 @@ dhcp-option=option:router,$RPI_IP
 dhcp-option=option:dns-server,$RPI_IP
 server=8.8.8.8
 server=8.8.4.4
-
-# Captive portal : rediriger *.local vers RPI_IP
 address=/#/$RPI_IP
+log-dhcp
 DNSMASQ_CONF
-    log "   Fichier dnsmasq.conf généré"
+    log "   Generated dnsmasq.conf"
 fi
 
-# Arrêter les instances existantes
+# Stop any existing dnsmasq instances
 killall dnsmasq 2>/dev/null || true
 sleep 1
 
-# Démarrer dnsmasq
-/usr/sbin/dnsmasq -C "$CONFIG_DIR/dnsmasq/dnsmasq.conf"
-log "✓ dnsmasq a démarré (PID: $!)"
+# Start dnsmasq
+if [ ! -x /usr/sbin/dnsmasq ]; then
+    log "❌ ERROR: dnsmasq not found or not executable at /usr/sbin/dnsmasq"
+    exit 1
+fi
 
-# --- Vérifier et attendre que hostapd soit opérationnel ---
-log "⏳ Vérification de l'AP..."
-for i in {1..10}; do
-    if iw dev "$WIFI_INTERFACE" link 2>/dev/null | grep -q "Connected to"; then
-        log "✓ AP hostapd opérationnel"
-        break
-    fi
-    sleep 1
-done
+/usr/sbin/dnsmasq -C "$ELDERSAFE_DIR/dnsmasq/dnsmasq.conf" 2>/dev/null
+sleep 1
+log "✓ dnsmasq started"
 
 log ""
 log "╔════════════════════════════════════════════╗"
-log "║  ✓ Configuration réseau terminée          ║"
+log "║  ✓ Network setup complete                 ║"
 log "╠════════════════════════════════════════════╣"
-log "║  WiFi AP SSID:     $WIFI_SSID"
-log "║  RPI IP:           $RPI_IP"
-log "║  Interfaces:       $ETH_INTERFACE (WAN), $WIFI_INTERFACE (AP)"
-log "║  Routage:          Actif (NAT Ethernet←→WiFi)"
-log "║  hostapd:          Actif"
-log "║  dnsmasq (DHCP):   Actif"
+log "║  SSID:      $WIFI_SSID"
+log "║  IP:        $RPI_IP"
+log "║  Routing:   Enabled"
+log "║  hostapd:   Running"
+log "║  dnsmasq:   Running"
 log "╚════════════════════════════════════════════╝"
 log ""
+log "✓ Ready for device provisioning"
 
-log "Prêt pour le provisioning ESP32 !"
 
 echo 1 > /proc/sys/net/ipv4/ip_forward
 

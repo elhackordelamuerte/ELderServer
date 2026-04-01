@@ -128,6 +128,20 @@ if [ -f "$REPO_ROOT/rpi/hostapd/dnsmasq.conf" ]; then
     log "✓ dnsmasq.conf copié"
 fi
 
+# --- Copier et rendre exécutables les scripts ---
+log "📝 Copie des scripts..."
+if [ -f "$REPO_ROOT/rpi/scripts/setup_network.sh" ]; then
+    cp "$REPO_ROOT/rpi/scripts/setup_network.sh" "$ELDERSAFE_DIR/setup_network.sh"
+    chmod 755 "$ELDERSAFE_DIR/setup_network.sh"
+    log "✓ setup_network.sh copié et rendu exécutable"
+fi
+
+if [ -f "$REPO_ROOT/rpi/provisioning/provisioner.py" ]; then
+    cp "$REPO_ROOT/rpi/provisioning/provisioner.py" "$ELDERSAFE_DIR/provisioner.py"
+    chmod 755 "$ELDERSAFE_DIR/provisioner.py"
+    log "✓ provisioner.py copié et rendu exécutable"
+fi
+
 # --- Créer les services systemd ---
 log "⚙️  Création des services systemd..."
 
@@ -140,10 +154,11 @@ Before=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=$REPO_ROOT/rpi/scripts/setup_network.sh
+ExecStart=$ELDERSAFE_DIR/setup_network.sh
 RemainAfterExit=yes
 StandardOutput=journal
 StandardError=journal
+StandardInput=null
 
 [Install]
 WantedBy=multi-user.target
@@ -158,7 +173,7 @@ PartOf=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 $REPO_ROOT/rpi/provisioning/provisioner.py
+ExecStart=/usr/bin/python3 $ELDERSAFE_DIR/provisioner.py
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
