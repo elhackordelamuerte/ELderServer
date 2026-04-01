@@ -1,14 +1,14 @@
 version: "3.9"
 
 # ============================================================
-# Eldersafe - Docker Compose (Raspberry Pi)
-# Services : FastAPI + Socket Server + MySQL
-# Note : hostapd et le provisioner tournent sur l'HÔTE
+# Eldersafe - Docker Compose Stack
+# Services: FastAPI + Socket Server + MySQL
+# Note: hostapd and provisioner run on HOST (not Docker)
 # ============================================================
 
 services:
 
-  # --- Base de données MySQL ---
+  # --- MySQL Database ---
   mysql:
     image: mysql:8.0
     container_name: eldersafe-mysql
@@ -20,9 +20,9 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./db/001_init_iot_tables.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      - ../db/001_init_iot_tables.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
     ports:
-      - "127.0.0.1:3306:3306"    # Exposé uniquement en local (pas sur le réseau WiFi)
+      - "127.0.0.1:3306:3306"    # Local only (not on WiFi network)
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
@@ -30,8 +30,13 @@ services:
       retries: 5
     networks:
       - eldersafe-internal
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # --- FastAPI backend ---
+  # --- FastAPI Backend Server ---
   fastapi:
     build:
       context: ./api
@@ -39,18 +44,26 @@ services:
     container_name: eldersafe-fastapi
     restart: unless-stopped
     environment:
-      DATABASE_URL: mysql+aiomysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
-      SOCKET_PORT: ${SOCKET_PORT:-9000}
+      DATABASE_URL: mysql+aiomysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-eldersafe_db}
       SECRET_KEY: ${SECRET_KEY:-change_me_in_production}
     ports:
-      - "127.0.0.1:8000:8000"    # Accessible uniquement en local
+      - "127.0.0.1:8000:8000"    # Local only
     depends_on:
       mysql:
         condition: service_healthy
     networks:
       - eldersafe-internal
-    volumes:
-      - ./api:/app:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # --- Socket Server TCP (ESP32 → RPI) ---
   socket-server:
@@ -63,14 +76,17 @@ services:
       SOCKET_PORT: ${SOCKET_PORT:-9000}
       FASTAPI_BASE_URL: http://fastapi:8000
     ports:
-      # Exposé sur le réseau WiFi interne (192.168.10.0/24) UNIQUEMENT
+      # Exposed on WiFi internal network ONLY
       - "192.168.10.1:9000:9000"
     depends_on:
       - fastapi
     networks:
       - eldersafe-internal
-    volumes:
-      - ./socket_server:/app:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   mysql_data:
@@ -82,3 +98,4 @@ networks:
     ipam:
       config:
         - subnet: 172.20.0.0/24
+

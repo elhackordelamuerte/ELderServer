@@ -264,37 +264,54 @@ def provision_esp32(network: Esp32Network):
 
 
 def main():
+    """Main provisioner loop - scan and provision ESP32s continuously."""
     log.info("╔══════════════════════════════════════╗")
-    log.info("║  Eldersafe Provisioner - Démarrage   ║")
+    log.info("║  Eldersafe Provisioner - Started     ║")
     log.info("╚══════════════════════════════════════╝")
 
-    # Attendre que le hotspot soit bien démarré
+    # Wait for hostapd to be ready
     time.sleep(10)
 
-    provisioned_ssids: set[str] = set()
+    # Load WiFi credentials
+    try:
+        wifi_ssid, wifi_password = get_wifi_credentials()
+        log.info(f"WiFi Config: SSID={wifi_ssid}")
+    except Exception as e:
+        log.error(f"Failed to load WiFi credentials: {e}")
+        return
+
+    provisioned_macs: set[str] = set()
 
     while True:
-        log.info("Scan des réseaux WiFi en cours...")
-        esp32_networks = scan_for_esp32_aps()
+        try:
+            log.info("Scanning for ESP32 APs...")
+            esp32_networks = scan_for_esp32_aps()
 
-        for network in esp32_networks:
-            if network.ssid in provisioned_ssids:
-                log.debug(f"Déjà provisionné cette session : {network.ssid}")
-                continue
+            for network in esp32_networks:
+                # Skip if already provisioned this session
+                if network.mac_hint in provisioned_macs:
+                    log.debug(f"Already provisioned: {network.ssid}")
+                    continue
 
-            if check_esp32_already_registered(network.mac_hint):
-                log.info(f"ESP32 déjà enregistré en DB : {network.mac_hint}, skip.")
-                provisioned_ssids.add(network.ssid)
-                continue
+                # Check if already registered in database
+                if check_esp32_already_registered(network.mac_hint):
+                    log.info(f"ESP32 already registered in DB: {network.mac_hint}")
+                    provisioned_macs.add(network.mac_hint)
+                    continue
 
-            provision_esp32(network)
-            provisioned_ssids.add(network.ssid)
+                # Provision this ESP32
+                log.info(f"Provisioning {network.ssid}...")
+                provision_esp32(network)
+                provisioned_macs.add(network.mac_hint)
 
-            # Pause après un provisioning pour laisser l'ESP32 rejoindre le réseau
-            time.sleep(15)
+                # Wait before next provision
+                time.sleep(15)
 
-        if not esp32_networks:
-            log.debug("Aucun ESP32 en mode setup détecté.")
+            if not esp32_networks:
+                log.debug("No ESP32 APs detected.")
+
+        except Exception as e:
+            log.error(f"Provisioner error: {e}")
 
         time.sleep(SCAN_INTERVAL_SECONDS)
 

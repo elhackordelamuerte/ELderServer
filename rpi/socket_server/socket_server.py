@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Eldersafe - Socket Server (TCP)
-================================
-Ce serveur tourne dans Docker (service 'socket-server').
-Rôle :
-  1. Accepter les connexions TCP des ESP32
-  2. Authentifier chaque ESP32 par son adresse MAC
-  3. Rejeter les MAC non enregistrées
-  4. Recevoir les données capteurs et les transmettre à FastAPI
-  5. Maintenir les connexions persistantes (1-5 ESP32 simultanés)
+Eldersafe - Socket Server (TCP asyncio)
+========================================
+Runs in Docker. Listens on 192.168.10.1:9000
+Acts as intermediary between ESP32 devices and FastAPI backend.
 
-Port : 9000 (configurable via SOCKET_PORT)
+Protocol:
+  ESP32 → Socket: {"type": "auth", "mac": "AA:BB:CC:DD:EE:FF"}
+  Socket → FastAPI: POST /api/iot-devices/socket-auth
+  FastAPI → Socket: {"status": "ok", "device_id": 123} or {"status": "error"}
+  
+  ESP32 → Socket: {"type": "data", "payload": {...}}
+  Socket → FastAPI: POST /api/iot-devices/telemetry/{device_id}
 """
 
 import asyncio
@@ -19,15 +20,243 @@ import logging
 import os
 import re
 import time
-from typing import Optional
+from typing import Optional, Dict
 import httpx
 
 # --- Configuration ---
 SOCKET_PORT = int(os.environ.get("SOCKET_PORT", "9000"))
 SOCKET_HOST = "0.0.0.0"
 FASTAPI_BASE_URL = os.environ.get("FASTAPI_BASE_URL", "http://fastapi:8000")
-READ_TIMEOUT = 60.0          # secondes sans données avant déconnexion
-MAX_MSG_SIZE = 4096          # bytes max par message
+READ_TIMEOUT = 60.0
+MAX_MSG_SIZE = 4096
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [SOCKET] %(levelname)s - %(message)s",
+)
+log = logging.getLogger(__name__)
+
+
+class SocketConnection:
+    """Represents an active ESP32 connection."""
+    
+    def __init__(self, reader, writer, remote_addr):
+        self.reader = reader
+        self.writer = writer
+        self.remote_ip = remote_addr[0]
+        self.remote_port = remote_addr[1]
+        self.device_id: Optional[int] = None
+        self.mac_address: Optional[str] = None
+        self.authenticated = False
+        self.created_at = time.time()
+    
+    async def send_json(self, data: dict):
+        """Send JSON message to client."""
+        try:
+            msg = json.dumps(data) + "\n"
+            self.writer.write(msg.encode())
+            await self.writer.drain()
+        except Exception as e:
+            log.error(f"Error sending to {self.remote_ip}: {e}")
+            raise
+    
+    async def recv_json(self) -> Optional[dict]:
+        """Receive JSON message from client."""
+        try:
+            data = await asyncio.wait_for(
+                self.reader.readuntil(b'\n'),
+                timeout=READ_TIMEOUT
+            )
+            if not data:
+                return None
+            return json.loads(data.decode().strip())
+        except asyncio.TimeoutError:
+            log.warning(f"Read timeout from {self.remote_ip}")
+            return None
+        except Exception as e:
+            log.error(f"Error receiving from {self.remote_ip}: {e}")
+            return None
+    
+    def close(self):
+        """Close connection."""
+        try:
+            self.writer.close()
+        except:
+            pass
+
+
+class SocketServer:
+    """TCP Socket Server for ESP32 devices."""
+    
+    def __init__(self):
+        self.connections: Dict[str, SocketConnection] = {}
+        self.http_client = None
+    
+    async def authenticate_device(self, conn: SocketConnection, mac: str) -> bool:
+        """Authenticate device via FastAPI."""
+        try:
+            async with self.http_client.post(
+                f"{FASTAPI_BASE_URL}/api/iot-devices/socket-auth",
+                json={"mac": mac},
+                timeout=10.0,
+            ) as resp:
+                if resp.status_code != 200:
+                    log.warning(f"Auth failed for {mac}: HTTP {resp.status_code}")
+                    return False
+                
+                data = await resp.json()
+                if data.get("status") == "ok":
+                    conn.device_id = data.get("device_id")
+                    conn.mac_address = mac
+                    conn.authenticated = True
+                    log.info(f"✓ Authenticated {mac} as device_id={conn.device_id}")
+                    return True
+                else:
+                    reason = data.get("reason", "Unknown error")
+                    log.warning(f"Auth rejected for {mac}: {reason}")
+                    return False
+        except Exception as e:
+            log.error(f"Auth error for {mac}: {e}")
+            return False
+    
+    async def store_telemetry(self, device_id: int, payload: dict) -> bool:
+        """Send telemetry data to FastAPI."""
+        try:
+            async with self.http_client.post(
+                f"{FASTAPI_BASE_URL}/api/iot-devices/telemetry/{device_id}",
+                json=payload,
+                timeout=10.0,
+            ) as resp:
+                if resp.status_code == 200:
+                    return True
+                else:
+                    log.warning(f"Telemetry store failed: HTTP {resp.status_code}")
+                    return False
+        except Exception as e:
+            log.error(f"Telemetry error for device_id={device_id}: {e}")
+            return False
+    
+    async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        """Handle a connected ESP32 client."""
+        remote_addr = writer.get_extra_info('peername')
+        conn = SocketConnection(reader, writer, remote_addr)
+        
+        log.info(f"[CONNECT] {conn.remote_ip}:{conn.remote_port}")
+        
+        try:
+            # Wait for AUTH message
+            auth_msg = await conn.recv_json()
+            if not auth_msg or auth_msg.get("type") != "auth":
+                log.warning(f"Invalid auth message from {conn.remote_ip}")
+                await conn.send_json({
+                    "status": "error",
+                    "reason": "Invalid auth message"
+                })
+                return
+            
+            mac = auth_msg.get("mac", "").upper()
+            if not self._is_valid_mac(mac):
+                log.warning(f"Invalid MAC format: {mac}")
+                await conn.send_json({
+                    "status": "error",
+                    "reason": "Invalid MAC format"
+                })
+                return
+            
+            # Authenticate against FastAPI
+            if not await self.authenticate_device(conn, mac):
+                await conn.send_json({
+                    "status": "error",
+                    "reason": "MAC not registered"
+                })
+                return
+            
+            # Send auth success
+            await conn.send_json({
+                "status": "ok",
+                "device_id": conn.device_id,
+                "message": "Authenticated"
+            })
+            
+            # Store connection
+            self.connections[f"{conn.remote_ip}:{conn.remote_port}"] = conn
+            
+            # Process incoming messages
+            while True:
+                msg = await conn.recv_json()
+                if msg is None:
+                    break
+                
+                msg_type = msg.get("type", "")
+                
+                if msg_type == "data":
+                    # Telemetry from ESP32
+                    payload = msg.get("payload", {})
+                    if await self.store_telemetry(conn.device_id, payload):
+                        await conn.send_json({"type": "ack"})
+                
+                elif msg_type == "ping":
+                    # Keepalive ping
+                    await conn.send_json({"type": "pong"})
+                
+                else:
+                    log.debug(f"Unknown message type from {conn.remote_ip}: {msg_type}")
+        
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.error(f"Error handling client {conn.remote_ip}: {e}")
+        
+        finally:
+            # Clean up
+            key = f"{conn.remote_ip}:{conn.remote_port}"
+            if key in self.connections:
+                del self.connections[key]
+            conn.close()
+            log.info(f"[DISCONNECT] {conn.remote_ip}:{conn.remote_port}")
+    
+    @staticmethod
+    def _is_valid_mac(mac: str) -> bool:
+        """Validate MAC address (AA:BB:CC:DD:EE:FF format)."""
+        pattern = r'^([0-9A-F]{2}:){5}([0-9A-F]{2})$'
+        return bool(re.match(pattern, mac))
+    
+    async def run(self):
+        """Start the socket server."""
+        # Create HTTP client for FastAPI communication
+        self.http_client = httpx.AsyncClient()
+        
+        server = await asyncio.start_server(
+            self.handle_client,
+            SOCKET_HOST,
+            SOCKET_PORT
+        )
+        
+        log.info(f"Socket Server listening on {SOCKET_HOST}:{SOCKET_PORT}")
+        
+        try:
+            async with server:
+                await server.serve_forever()
+        except KeyboardInterrupt:
+            log.info("Shutdown requested")
+        finally:
+            if self.http_client:
+                await self.http_client.aclose()
+
+
+async def main():
+    """Main entry point."""
+    log.info("╔════════════════════════════════════╗")
+    log.info("║  Eldersafe Socket Server          ║")
+    log.info("╚════════════════════════════════════╝")
+    
+    server = SocketServer()
+    await server.run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
 HEARTBEAT_INTERVAL = 30      # secondes entre les pings de keepalive
 
 logging.basicConfig(

@@ -1,23 +1,298 @@
 """
-Eldersafe - FastAPI Routes : IoT Devices
-==========================================
-Endpoints consommés par :
-  - Le socket server (auth, register, sensor data)
-  - Le provisioner (check MAC hint)
-  - Le frontend/dashboard (liste des devices)
+Eldersafe API - FastAPI Routes for IoT Devices
+================================================
+Endpoints consumed by:
+  - Socket server (auth, register device, store telemetry)
+  - Provisioner (check if MAC registered)
+  - Frontend/Dashboard (list, CRUD operations)
 """
 
 from datetime import datetime
-from typing import Optional
-import re
-
-from fastapi import APIRouter, HTTPException, Depends
+from typing import Optional, List
 from pydantic import BaseModel, validator
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
 
-from ..database import get_db
-from ..models import IoTDevice, SensorData
+from fastapi import APIRouter, HTTPException, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update, func
+
+from .database import get_db
+from .models import IotDevice, TelemetryData, SocketSession, Base
+
+# --- Pydantic Schemas ---
+
+class MacAddressValidator:
+    """Validate MAC address format."""
+    
+    @staticmethod
+    def validate_mac(mac: str) -> str:
+        """Accept both AA:BB:CC:DD:EE:FF and AABBCCDDEEFF formats."""
+        mac = mac.upper()
+        if len(mac) == 17 and all(c in '0123456789ABCDEF:' for c in mac):
+            return mac  # AA:BB:CC:DD:EE:FF format
+        elif len(mac) == 12 and all(c in '0123456789ABCDEF' for c in mac):
+            # Convert AABBCCDDEEFF to AA:BB:CC:DD:EE:FF
+            return ':'.join(mac[i:i+2] for i in range(0, 12, 2))
+        else:
+            raise ValueError(f"Invalid MAC address format: {mac}")
+
+
+class IotDeviceCreate(BaseModel):
+    mac_address: str
+    device_name: str
+    device_type: str = "ESP32"
+    location: Optional[str] = None
+    notes: Optional[str] = None
+    
+    @validator('mac_address')
+    def validate_mac_address(cls, v):
+        return MacAddressValidator.validate_mac(v)
+
+
+class IotDeviceUpdate(BaseModel):
+    device_name: Optional[str] = None
+    is_active: Optional[bool] = None
+    location: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class IotDeviceOut(BaseModel):
+    id: int
+    mac_address: str
+    device_name: str
+    device_type: str
+    is_active: bool
+    last_seen: Optional[datetime]
+    location: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TelemetryDataIn(BaseModel):
+    temperature: Optional[float] = None
+    humidity: Optional[float] = None
+    battery_mv: Optional[int] = None
+    uptime_s: Optional[int] = None
+    extra_data: Optional[dict] = None
+
+
+class SocketAuthRequest(BaseModel):
+    mac: str
+    
+    @validator('mac')
+    def validate_mac(cls, v):
+        return MacAddressValidator.validate_mac(v)
+
+
+class SocketAuthResponse(BaseModel):
+    status: str  # "ok" or "error"
+    device_id: Optional[int] = None
+    reason: Optional[str] = None
+
+
+# --- Router ---
+
+router = APIRouter(prefix="/api/iot-devices", tags=["iot-devices"])
+
+
+@router.post("/register", response_model=IotDeviceOut)
+async def register_device(device: IotDeviceCreate, db: AsyncSession = Depends(get_db)):
+    """Register a new IoT device (administratively)."""
+    
+    # Check if MAC already exists
+    result = await db.execute(
+        select(IotDevice).where(IotDevice.mac_address == device.mac_address)
+    )
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail=f"Device with MAC {device.mac_address} already exists")
+    
+    # Create device
+    db_device = IotDevice(
+        mac_address=device.mac_address,
+        device_name=device.device_name,
+        device_type=device.device_type,
+        location=device.location,
+        notes=device.notes,
+    )
+    db.add(db_device)
+    await db.commit()
+    await db.refresh(db_device)
+    return db_device
+
+
+@router.post("/socket-auth", response_model=SocketAuthResponse)
+async def socket_authenticate(auth: SocketAuthRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Socket server authentication endpoint.
+    Called when ESP32 connects via TCP - must verify MAC is registered.
+    """
+    mac = auth.mac
+    
+    # Find device by MAC
+    result = await db.execute(
+        select(IotDevice).where(IotDevice.mac_address == mac)
+    )
+    device = result.scalar_one_or_none()
+    
+    if not device:
+        return SocketAuthResponse(
+            status="error",
+            reason=f"MAC {mac} not registered"
+        )
+    
+    if not device.is_active:
+        return SocketAuthResponse(
+            status="error",
+            reason=f"Device {device.device_name} is inactive"
+        )
+    
+    # Update last_seen
+    device.last_seen = datetime.utcnow()
+    await db.commit()
+    
+    return SocketAuthResponse(
+        status="ok",
+        device_id=device.id,
+    )
+
+
+@router.post("/telemetry/{device_id}")
+async def store_telemetry(
+    device_id: int,
+    data: TelemetryDataIn,
+    db: AsyncSession = Depends(get_db)
+):
+    """Store sensor data from a device."""
+    
+    # Verify device exists
+    result = await db.execute(
+        select(IotDevice).where(IotDevice.id == device_id)
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    
+    # Create telemetry record
+    telemetry = TelemetryData(
+        device_id=device_id,
+        temperature=data.temperature,
+        humidity=data.humidity,
+        battery_mv=data.battery_mv,
+        uptime_s=data.uptime_s,
+        extra_data=data.extra_data,
+        timestamp=datetime.utcnow(),
+    )
+    db.add(telemetry)
+    
+    # Update device last_seen
+    device.last_seen = datetime.utcnow()
+    
+    await db.commit()
+    return {"status": "ok", "telemetry_id": telemetry.id}
+
+
+@router.get("/check-mac/{mac_address}")
+async def check_mac_registered(mac_address: str, db: AsyncSession = Depends(get_db)):
+    """Check if a MAC address is registered (used by provisioner)."""
+    mac = MacAddressValidator.validate_mac(mac_address)
+    
+    result = await db.execute(
+        select(IotDevice).where(IotDevice.mac_address == mac)
+    )
+    device = result.scalar_one_or_none()
+    
+    return {
+        "registered": device is not None,
+        "device_id": device.id if device else None,
+    }
+
+
+@router.get("/", response_model=List[IotDeviceOut])
+async def list_devices(
+    active_only: bool = Query(False),
+    db: AsyncSession = Depends(get_db)
+):
+    """List all devices."""
+    query = select(IotDevice)
+    if active_only:
+        query = query.where(IotDevice.is_active == True)
+    
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+@router.get("/{device_id}", response_model=IotDeviceOut)
+async def get_device(device_id: int, db: AsyncSession = Depends(get_db)):
+    """Get a specific device."""
+    result = await db.execute(
+        select(IotDevice).where(IotDevice.id == device_id)
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return device
+
+
+@router.put("/{device_id}", response_model=IotDeviceOut)
+async def update_device(
+    device_id: int,
+    update: IotDeviceUpdate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Update a device."""
+    result = await db.execute(
+        select(IotDevice).where(IotDevice.id == device_id)
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    
+    if update.device_name:
+        device.device_name = update.device_name
+    if update.is_active is not None:
+        device.is_active = update.is_active
+    if update.location:
+        device.location = update.location
+    if update.notes:
+        device.notes = update.notes
+    
+    await db.commit()
+    await db.refresh(device)
+    return device
+
+
+@router.delete("/{device_id}")
+async def delete_device(device_id: int, db: AsyncSession = Depends(get_db)):
+    """Delete a device."""
+    result = await db.execute(
+        select(IotDevice).where(IotDevice.id == device_id)
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    
+    await db.delete(device)
+    await db.commit()
+    return {"status": "deleted"}
+
+
+@router.get("/telemetry/{device_id}/latest")
+async def get_latest_telemetry(
+    device_id: int,
+    limit: int = Query(10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get latest telemetry records for a device."""
+    result = await db.execute(
+        select(TelemetryData)
+        .where(TelemetryData.device_id == device_id)
+        .order_by(TelemetryData.timestamp.desc())
+        .limit(limit)
+    )
+    return result.scalars().all()
+
 
 router = APIRouter(prefix="/api", tags=["IoT Devices"])
 

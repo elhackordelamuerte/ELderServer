@@ -1,53 +1,369 @@
-# Eldersafe — Documentation protocole IoT
-## Architecture de connexion ESP32 ↔ Raspberry Pi
+# Eldersafe IoT Protocol Documentation
 
----
+## Architecture Overview
 
-## Vue d'ensemble
-
-```
-[ESP32] ←WiFi→ [RPI (hostapd)] ←TCP Socket→ [RPI (Docker: FastAPI + MySQL)]
-                     ↑
-               [RPI Ethernet → Modem/Internet]
-```
-
-Le Raspberry Pi joue **deux rôles réseau simultanément** :
-- **eth0** : connecté au modem, accès internet normal
-- **wlan0** : crée son propre réseau WiFi WPA2 (`ELDERSAFE_SECURE`)
-
----
-
-## Structure des fichiers
+Eldersafe is a distributed IoT system designed to monitor elderly residents using ESP32-based sensors. Each Raspberry Pi acts as a central hub with WiFi provisioning, data collection, and persistent storage.
 
 ```
-eldersafe/
-├── esp32/
-│   └── eldersafe_firmware.ino      # Firmware Arduino ESP32
-│
-└── rpi/
-    ├── scripts/
-    │   ├── install.sh              # Installation initiale (à lancer 1 seule fois)
-    │   └── setup_network.sh        # Lancé au démarrage par systemd
-    │
-    ├── hostapd/
-    │   ├── hostapd.conf            # Config du hotspot WiFi
-    │   └── dnsmasq.conf            # Config DHCP pour les ESP32
-    │
-    ├── provisioning/
-    │   └── provisioner.py          # Détecte et configure les ESP32 neufs
-    │
-    ├── socket_server/
-    │   └── socket_server.py        # Serveur TCP (auth MAC + données)
-    │
-    ├── docker/
-    │   ├── docker-compose.yml      # FastAPI + MySQL + Socket Server
-    │   └── api/
-    │       ├── routes_iot_devices.py
-    │       └── models.py
-    │
-    └── db/
-        └── 001_init_iot_tables.sql # Migration SQL initiale
+┌─────────────────────────────┐
+│   ESP32 #1, #2, #3...       │
+│   (Sensors in rooms)        │
+│   - Temperature/Humidity    │
+│   - Battery monitoring      │
+└──────────┬──────────────────┘
+           │ WiFi TCP (port 9000)
+           ↓
+┌─────────────────────────────┐
+│  Raspberry Pi 4 (LOCAL HUB) │  192.168.10.1
+├─────────────────────────────┤
+│ hostapd (SSID: ELDERSAFE_SECURE)
+│ dnsmasq (DHCP: .10.10-.249)
+│ provisioner.py (discovery)
+│ socket-server:9000 (asyncio)  ← TCP from ESP32
+│ FastAPI:8000 (REST API)       ← From socket-server
+│ MySQL (telemetry storage)
+└─────────────────────────────┘
+           │ Ethernet
+           ↓
+     [Internet / Cloud]
 ```
+
+## Provisioning Flow
+
+### 1. ESP32 Boot States
+
+#### MODE 1: Setup (No WiFi Credentials)
+- Boots without WiFi config stored in NVS
+- Starts Access Point: `ELDERSAFE_SETUP_AABBCC` (last 6 MAC chars)
+- No password (open network for provisioning)
+- HTTP server on 192.168.4.1:80
+- Awaits provisioning credentials
+
+#### MODE 2: Normal (WiFi Credentials Available)
+- Reads credentials from NVS
+- Connects to `ELDERSAFE_SECURE` network
+- Establishes TCP socket to 192.168.10.1:9000
+- Authenticates with MAC address
+- Sends sensor telemetry every 5 seconds
+- Keepalive ping every 25 seconds
+
+### 2. Provisioning Sequence
+
+```
+┌──────────────┐
+│  RPI boots   │
+│  hostapd ON  │
+└──────┬───────┘
+       │
+       ├─ setup_network.sh (systemd)
+       │  - Configure wlan0: 192.168.10.1/24
+       │  - Start hostapd + dnsmasq
+       │  - Configure NAT + iptables
+       │
+       └─ provisioner.py (service)
+          - Scan WiFi every 30s
+          - Detect: ELDERSAFE_SETUP_*
+          │
+          ├─ Stop hostapd temporarily
+          ├─ Connect to ESP32 AP
+          ├─ POST /provision with:
+          │  {
+          │  "ssid": "ELDERSAFE_SECURE",
+          │  "password": "WPA2_PASSWORD",
+          │  "server_ip": "192.168.10.1",
+          │  "server_port": 9000
+          │  }
+          ├─ ESP32 saves to NVS → Reboots
+          ├─ Restart hostapd
+          │
+          └─ Wait for ESP32 to join ELDERSAFE_SECURE
+```
+
+## Communication Protocol
+
+### Socket Protocol (ESP32 ↔ Socket Server)
+
+All messages are JSON-terminated with newline (`\n`).
+
+#### 1. Authentication
+
+```json
+// ESP32 → Socket Server
+{
+  "type": "auth",
+  "mac": "AA:BB:CC:DD:EE:FF"
+}
+
+// Socket Server → FastAPI
+POST /api/iot-devices/socket-auth
+{"mac": "AA:BB:CC:DD:EE:FF"}
+
+// FastAPI → Socket Server (response)
+{
+  "status": "ok",
+  "device_id": 123
+}
+
+// Socket Server → ESP32
+{
+  "status": "ok",
+  "device_id": 123,
+  "message": "Authenticated"
+}
+```
+
+#### 2. Telemetry Data
+
+```json
+// ESP32 → Socket Server (every 5 seconds)
+{
+  "type": "data",
+  "payload": {
+    "temperature": 22.5,
+    "humidity": 55.0,
+    "battery_mv": 3700,
+    "uptime_s": 1234567,
+    "extra_data": {}
+  }
+}
+
+// Socket Server → FastAPI
+POST /api/iot-devices/telemetry/123
+{
+  "temperature": 22.5,
+  "humidity": 55.0,
+  "battery_mv": 3700,
+  "uptime_s": 1234567,
+  "extra_data": {}
+}
+
+// Socket Server → ESP32 (acknowledgement)
+{
+  "type": "ack"
+}
+```
+
+#### 3. Keepalive Ping
+
+```json
+// ESP32 → Socket Server (every 25 seconds)
+{
+  "type": "ping"
+}
+
+// Socket Server → ESP32
+{
+  "type": "pong"
+}
+```
+
+### REST API (FastAPI)
+
+#### Device Management
+
+```
+POST   /api/iot-devices/register
+GET    /api/iot-devices
+GET    /api/iot-devices/{device_id}
+PUT    /api/iot-devices/{device_id}
+DELETE /api/iot-devices/{device_id}
+GET    /api/iot-devices/check-mac/{mac_address}
+GET    /api/iot-devices/telemetry/{device_id}/latest
+```
+
+#### Socket Authentication
+
+```
+POST /api/iot-devices/socket-auth
+Content-Type: application/json
+
+{
+  "mac": "AA:BB:CC:DD:EE:FF"
+}
+
+Response:
+{
+  "status": "ok|error",
+  "device_id": 123,
+  "reason": "optional error message"
+}
+```
+
+## Database Schema
+
+### iot_devices
+```sql
+id              INT PRIMARY KEY
+mac_address     VARCHAR(17) UNIQUE  -- AA:BB:CC:DD:EE:FF
+device_name     VARCHAR(100)
+device_type     VARCHAR(50)         -- "ESP32"
+is_active       BOOLEAN DEFAULT TRUE
+last_seen       DATETIME NULL
+location        VARCHAR(255)
+notes           TEXT
+created_at      DATETIME
+updated_at      DATETIME
+```
+
+### telemetry_data
+```sql
+id              INT PRIMARY KEY
+device_id       INT FOREIGN KEY → iot_devices.id
+temperature     FLOAT (Celsius)
+humidity        FLOAT (%)
+battery_mv      INT (millivolts)
+uptime_s        INT (seconds)
+extra_data      JSON
+timestamp       DATETIME
+```
+
+### socket_sessions
+```sql
+id              INT PRIMARY KEY
+device_id       INT FOREIGN KEY → iot_devices.id
+remote_ip       VARCHAR(45)     -- IPv4 or IPv6
+remote_port     INT
+connected_at    DATETIME
+disconnected_at DATETIME
+```
+
+## Service Architecture
+
+### 1. Raspberry Pi Services (systemd)
+
+#### eldersafe-setup-network.service
+- **Type**: oneshot
+- **Trigger**: boot (multi-user.target)
+- **Action**: Configure wlan0 IP, hostapd, dnsmasq, iptables NAT
+- **Script**: `/rpi/scripts/setup_network.sh`
+
+#### eldersafe-provisioner.service
+- **Type**: simple
+- **Trigger**: after setup-network
+- **Action**: Scan for ESP32 APs, provision new devices
+- **Script**: `/rpi/provisioning/provisioner.py`
+- **Restart**: on-failure (10s backoff)
+
+#### eldersafe-docker.service
+- **Type**: oneshot
+- **Trigger**: after setup-network
+- **Action**: docker-compose up (MySQL, FastAPI, Socket Server)
+- **Dependencies**: docker.service
+
+### 2. Docker Services
+
+#### MySQL 8.0
+- Port: 3306 (internal only, 127.0.0.1)
+- Database: eldersafe_db
+- Healthcheck: mysqladmin ping
+- Volume: mysql_data (persistent)
+
+#### FastAPI
+- Port: 8000 (local 127.0.0.1)
+- Framework: FastAPI + SQLAlchemy (aiomysql driver)
+- Routes: /api/iot-devices/*
+- Depends on: MySQL health check
+
+#### Socket Server
+- Port: 9000 (exposed on 192.168.10.1)
+- Protocol: TCP + JSON (asyncio)
+- Auth: MAC address verification
+- Depends on: FastAPI
+
+## Troubleshooting
+
+### ESP32 Won't Provision
+1. **Check hostapd is running**:
+   ```bash
+   ps aux | grep hostapd
+   ```
+   
+2. **Verify dnsmasq DHCP**:
+   ```bash
+   ps aux | grep dnsmasq
+   tailf /var/log/dnsmasq.log
+   ```
+   
+3. **Check provisioner logs**:
+   ```bash
+   journalctl -u eldersafe-provisioner.service -f
+   ```
+
+### Socket Connection Fails
+1. **Verify Socket Server is running**:
+   ```bash
+   docker logs eldersafe-socket
+   ```
+   
+2. **Check MAC registered**:
+   ```bash
+   curl http://127.0.0.1:8000/api/iot-devices/check-mac/AABBCCDDEEFF
+   ```
+   
+3. **Test TCP connectivity**:
+   ```bash
+   nc -zv 192.168.10.1 9000
+   ```
+
+### No Telemetry Data
+1. **Check FastAPI logs**:
+   ```bash
+   docker logs eldersafe-fastapi
+   ```
+   
+2. **Verify MySQL connection**:
+   ```bash
+   docker logs eldersafe-mysql
+   ```
+   
+3. **Check device is active**:
+   ```sql
+   SELECT * FROM iot_devices WHERE is_active=1;
+   SELECT * FROM telemetry_data ORDER BY timestamp DESC LIMIT 10;
+   ```
+
+## Environment Variables
+
+Loaded from `/etc/eldersafe/.env` at runtime:
+
+```bash
+# WiFi
+WIFI_SSID=ELDERSAFE_SECURE
+WIFI_PASSWORD=<random_20_chars>
+
+# Network
+RPI_IP=192.168.10.1
+
+# MySQL
+MYSQL_ROOT_PASSWORD=<random>
+MYSQL_USER=eldersafe
+MYSQL_PASSWORD=<random>
+MYSQL_DATABASE=eldersafe_db
+
+# Services
+SECRET_KEY=<random_32_hex>
+SOCKET_PORT=9000
+```
+
+## Performance Notes
+
+- **Max ESP32 per RPI**: 10-20 devices (socket server handles concurrent connections)
+- **Data interval**: 5 seconds per device
+- **Bandwidth**: ~100 bytes/message × 12 msg/min = 1.2 KB/min per device
+- **Storage**: ~500 KB/device/month (1 month retention recommended)
+
+## Security Considerations
+
+1. **NVS Storage**: WiFi credentials stored unencrypted in ESP32 flash
+2. **Socket Auth**: MAC-based only (not cryptographic)
+3. **HTTP Provisioning**: Temporary, on open network (192.168.4.0/24)
+4. **Network Isolation**: Docker containers on isolated bridge network
+
+For production:
+- Implement certificate-based device authentication
+- Encrypt sensitive data in NVS
+- Add firewall rules to block external access
+
 
 ---
 

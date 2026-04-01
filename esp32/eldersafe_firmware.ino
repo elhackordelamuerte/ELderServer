@@ -1,27 +1,29 @@
 /*
  * ============================================================
- * Eldersafe - Firmware ESP32
+ * Eldersafe - Firmware ESP32 (Complet)
  * ============================================================
- * Comportement :
+ * 
+ * MODES :
+ * [MODE 1 - SETUP] Pas de credentials WiFi :
+ *   → Lance AP "ELDERSAFE_SETUP_XXXX" (XXXX = 4 derniers caractères MAC)
+ *   → HTTP server sur 192.168.4.1:80
+ *   → Reçoit credentials via POST /provision (JSON: {ssid, password})
+ *   → Sauvegarde en NVS
+ *   → Redémarre
  *
- * [MODE 1 - SETUP] Pas de credentials WiFi en mémoire :
- *   → Lance un Access Point "ELDERSAFE_SETUP_XXXX" (XXXX = fin MAC)
- *   → Héberge un serveur HTTP sur 192.168.4.1
- *   → Attend que le RPI se connecte et envoie les credentials via POST /provision
- *   → Sauvegarde les credentials en NVS (flash non-volatile)
- *   → Redémarre en MODE 2
+ * [MODE 2 - NORMAL] Credentials présents :
+ *   → Connexion WiFi au réseau ELDERSAFE_SECURE
+ *   → Reconnexion automatique si déconnexion
+ *   → TCP persistante au socket server (192.168.10.1:9000)
+ *   → Auth MAC + envoi JSON capteurs toutes les 5s
+ *   → Keepalive toutes les 25s
  *
- * [MODE 2 - NORMAL] Credentials WiFi disponibles :
- *   → Se connecte au réseau ELDERSAFE_SECURE du RPI
- *   → Ouvre une connexion TCP persistante vers le socket server
- *   → S'authentifie avec son adresse MAC
- *   → Envoie les données capteurs toutes les DATA_INTERVAL_MS ms
+ * Librairies :
+ *   - WiFi.h, WebServer.h, Preferences.h (ESP32 built-in)
+ *   - ArduinoJson v6+ (Library Manager)
  *
- * Librairies requises (Arduino IDE / PlatformIO) :
- *   - WiFi.h          (built-in ESP32)
- *   - WebServer.h     (built-in ESP32)
- *   - Preferences.h   (built-in ESP32 - NVS)
- *   - ArduinoJson     (v6+ via Library Manager)
+ * Pins (à adapter) :
+ *   - Sensor: GPIO34 (temperature/humidity)
  * ============================================================
  */
 
@@ -31,23 +33,44 @@
 #include <ArduinoJson.h>
 
 // --- Configuration ---
-#define SETUP_AP_PREFIX     "ELDERSAFE_SETUP_"
-#define SETUP_AP_CHANNEL    6
-#define SETUP_AP_IP         "192.168.4.1"
-#define WIFI_CONNECT_TIMEOUT_MS  15000
-#define WIFI_RETRY_COUNT    5
-#define SOCKET_CONNECT_TIMEOUT_MS 10000
-#define DATA_INTERVAL_MS    5000          // Envoi données toutes les 5s
-#define PING_INTERVAL_MS    25000         // Keepalive toutes les 25s
-#define NVS_NAMESPACE       "eldersafe"
-#define SERIAL_BAUD         115200
+#define SETUP_AP_PREFIX         "ELDERSAFE_SETUP_"
+#define SETUP_AP_CHANNEL        6
+#define SETUP_AP_IP             "192.168.4.1"
+#define SETUP_AP_SUBNET         "255.255.255.0"
+#define WIFI_NETWORK_NORMAL     "ELDERSAFE_SECURE"
+#define SOCKET_SERVER_IP        "192.168.10.1"
+#define SOCKET_SERVER_PORT      9000
+#define SOCKET_CONNECT_TIMEOUT  10000
+#define WIFI_CONNECT_TIMEOUT    15000
+#define WIFI_RETRY_COUNT        5
+#define DATA_INTERVAL_MS        5000
+#define PING_INTERVAL_MS        25000
+#define NVS_NAMESPACE           "eldersafe"
+#define SERIAL_BAUD             115200
+#define HOSTNAME_PREFIX         "ESP32-ELDERSAFE-"
+
+// --- Sensor pins ---
+#define SENSOR_PIN              34    // Analog input for temperature
+#define LED_PIN                 GPIO_NUM_2
 
 // --- Variables globales ---
-Preferences prefs;
-WebServer   setupServer(80);
-WiFiClient  socketClient;
+Preferences     prefs;
+WebServer       setupServer(80);
+WiFiClient      socketClient;
+IPAddress       setupIP;
+IPAddress       setupGateway;
+IPAddress       setupSubnet;
 
-String wifiSSID     = "";
+String          wifiSSID        = "";
+String          wifiPassword    = "";
+String          macAddress      = "";
+String          deviceID        = "";
+boolean         isSetupMode     = false;
+boolean         isConnected     = false;
+boolean         socketConnected = false;
+
+unsigned long   lastDataSend    = 0;
+unsigned long   lastPingSend    = 0;
 String wifiPassword = "";
 String serverIP     = "";
 int    serverPort   = 9000;
