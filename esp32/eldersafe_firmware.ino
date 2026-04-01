@@ -41,7 +41,7 @@
 #define SOCKET_SERVER_IP        "192.168.10.1"
 #define SOCKET_SERVER_PORT      9000
 #define SOCKET_CONNECT_TIMEOUT  10000
-#define WIFI_CONNECT_TIMEOUT    15000
+#define WIFI_CONNECT_TIMEOUT_MS 15000
 #define WIFI_RETRY_COUNT        5
 #define DATA_INTERVAL_MS        5000
 #define PING_INTERVAL_MS        25000
@@ -67,22 +67,18 @@ String          macAddress      = "";
 String          deviceID        = "";
 boolean         isSetupMode     = false;
 boolean         isConnected     = false;
-boolean         socketConnected = false;
+bool            socketConnected = false;
 
-unsigned long   lastDataSend    = 0;
-unsigned long   lastPingSend    = 0;
-String wifiPassword = "";
-String serverIP     = "";
-int    serverPort   = 9000;
+String          serverIP        = "";
+int             serverPort      = 9000;
 
-String deviceMAC    = "";
-String deviceID_str = "";
+String          deviceMAC       = "";
+String          deviceID_str    = "";
 
-unsigned long lastDataSent = 0;
-unsigned long lastPingSent = 0;
+unsigned long   lastDataSent    = 0;
+unsigned long   lastPingSent    = 0;
 
-bool isProvisioned = false;
-bool socketConnected = false;
+bool            isProvisioned   = false;
 
 // ============================================================
 // UTILITAIRES
@@ -159,7 +155,7 @@ void handleProvisionPost() {
     String body = setupServer.arg("plain");
     logf("[AP] Reçu POST /provision : %s", body.c_str());
 
-    StaticJsonDocument<512> doc;
+    JsonDocument doc;
     DeserializationError err = deserializeJson(doc, body);
 
     if (err) {
@@ -222,7 +218,7 @@ document.getElementById('f').onsubmit=function(e){
 }
 
 void handleStatus() {
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     doc["mac"]   = getMACFormatted();
     doc["mode"]  = "setup";
     doc["ssid"]  = getSetupSSID();
@@ -258,6 +254,8 @@ void startSetupMode() {
 
 bool connectToWiFi() {
     logf("[WIFI] Connexion à %s...", wifiSSID.c_str());
+    WiFi.disconnect(true); // Clear saved config and any ongoing connection
+    delay(500);
     WiFi.mode(WIFI_STA);
     WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 
@@ -279,7 +277,7 @@ bool connectToWiFi() {
 // SOCKET - Authentification + données
 // ============================================================
 
-bool sendJSON(const StaticJsonDocument<512>& doc) {
+bool sendJSON(const JsonDocument& doc) {
     if (!socketClient.connected()) return false;
     String out;
     serializeJson(doc, out);
@@ -291,7 +289,7 @@ bool sendJSON(const StaticJsonDocument<512>& doc) {
 bool authenticateWithServer() {
     logf("[SOCKET] Authentification avec MAC : %s", getMACFormatted().c_str());
 
-    StaticJsonDocument<256> authMsg;
+    JsonDocument authMsg;
     authMsg["type"] = "auth";
     authMsg["mac"]  = getMACFormatted();
     sendJSON(authMsg);
@@ -307,7 +305,7 @@ bool authenticateWithServer() {
     }
 
     String response = socketClient.readStringUntil('\n');
-    StaticJsonDocument<256> resp;
+    JsonDocument resp;
     if (deserializeJson(resp, response)) {
         logf("[SOCKET] Réponse auth invalide");
         return false;
@@ -340,7 +338,7 @@ void sendSensorData() {
     // Remplacer par les vraies lectures de capteurs
     // Exemple : température, humidité, accéléromètre, etc.
     // -------------------------------------------------------
-    StaticJsonDocument<512> doc;
+    JsonDocument doc;
     doc["type"] = "data";
 
     JsonObject payload = doc.createNestedObject("payload");
@@ -355,7 +353,7 @@ void sendSensorData() {
 }
 
 void sendPing() {
-    StaticJsonDocument<64> doc;
+    JsonDocument doc;
     doc["type"] = "ping";
     sendJSON(doc);
 }
@@ -364,7 +362,7 @@ void handleServerMessage() {
     if (!socketClient.available()) return;
 
     String raw = socketClient.readStringUntil('\n');
-    StaticJsonDocument<256> msg;
+    JsonDocument msg;
     if (deserializeJson(msg, raw)) return;
 
     String type = msg["type"] | "";

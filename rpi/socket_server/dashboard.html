@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Eldersafe - ESP32 Monitoring Dashboard</title>
+    <!-- Modern font -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Roboto+Mono:wght@400;500&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(17, 25, 40, 0.75);
+            --border-color: rgba(255, 255, 255, 0.125);
+            --primary: #00f0ff;
+            --accent: #ff003c;
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --success: #10b981;
+            --warning: #f59e0b;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(0, 240, 255, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(255, 0, 60, 0.15) 0px, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            padding: 1.5rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(11, 15, 25, 0.8);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: 2px;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .logo .glitch {
+            color: var(--primary);
+            text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--success);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+        }
+
+        .status-pill.disconnected {
+            background: rgba(255, 0, 60, 0.1);
+            border: 1px solid rgba(255, 0, 60, 0.3);
+            color: var(--accent);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--success);
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--success);
+            animation: pulse 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
+        }
+
+        .status-pill.disconnected .status-dot {
+            background-color: var(--accent);
+            box-shadow: 0 0 8px var(--accent);
+            animation: none;
+        }
+
+        main {
+            padding: 2rem;
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 2rem;
+            max-width: 1600px;
+            margin: 0 auto;
+            width: 100%;
+            box-sizing: border-box;
+        }
+
+        @media (max-width: 1200px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-header {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1.1rem;
+            color: white;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* Device Grid */
+        .device-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .device-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 1.5rem;
+            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .device-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+            border-color: rgba(0, 240, 255, 0.3);
+        }
+        
+        .device-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 2px;
+            background: linear-gradient(90deg, var(--primary), var(--accent));
+            opacity: 0.5;
+        }
+
+        .device-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .device-mac {
+            font-family: 'Roboto Mono', monospace;
+            font-weight: 500;
+            color: var(--primary);
+            font-size: 1.1rem;
+        }
+
+        .device-ip {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            background: rgba(0,0,0,0.3);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        .device-stats {
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9rem;
+        }
+
+        .stat-label {
+            color: var(--text-muted);
+        }
+
+        .stat-val {
+            font-weight: 600;
+            color: white;
+            font-family: 'Roboto Mono', monospace;
+        }
+
+        .pulse-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: var(--primary);
+            border-radius: 50%;
+            margin-left: 5px;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .pulse-indicator.active {
+            opacity: 1;
+            box-shadow: 0 0 8px var(--primary);
+        }
+
+        /* Terminal Console */
+        .terminal {
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            min-height: 400px;
+        }
+
+        .terminal::-webkit-scrollbar {
+            width: 8px;
+        }
+        .terminal::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2); 
+        }
+        .terminal::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2); 
+            border-radius: 4px;
+        }
+        .terminal::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.4); 
+        }
+
+        .log-entry {
+            margin-bottom: 4px;
+            word-break: break-all;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .log-time { color: var(--text-muted); margin-right: 8px; }
+        .log-info { color: var(--text-main); }
+        .log-connect { color: var(--success); }
+        .log-disconnect { color: var(--accent); }
+        .log-data { color: var(--primary); }
+        .log-error { color: var(--accent); font-weight: bold; }
+        .log-warn { color: var(--warning); }
+
+        /* Animation */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .empty-state {
+            grid-column: 1 / -1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 3rem;
+            color: var(--text-muted);
+            text-align: center;
+        }
+
+        .empty-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+        }
+        
+        button {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        button:hover {
+            background: rgba(255,255,255,0.2);
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">
+            <span class="glitch">ES</span> Socket Server
+        </div>
+        <div class="status-pill disconnected" id="ws-status">
+            <div class="status-dot"></div>
+            <span id="ws-status-text">Disconnected</span>
+        </div>
+    </header>
+
+    <main>
+        <!-- Left Column: Devices -->
+        <div class="panel">
+            <div class="panel-header">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--primary)"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>
+                Active Devices (<span id="device-count">0</span>)
+            </div>
+            <div class="device-grid" id="device-grid">
+                <!-- Devices will be inserted here -->
+                <div class="empty-state" id="empty-state">
+                    <div class="empty-icon">📡</div>
+                    <h3>No Devices Connected</h3>
+                    <p>Awaiting incoming connections from ESP32 nodes...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column: Terminal -->
+        <div class="panel" style="display: flex; flex-direction: column;">
+            <div class="panel-header" style="justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent)"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+                    Live Logs
+                </div>
+                <div class="controls">
+                    <button id="btn-clear-logs">Clear</button>
+                    <button id="btn-toggle-autoScroll" style="background: rgba(0,240,255,0.2); border-color: rgba(0,240,255,0.4);">Auto-Scroll: ON</button>
+                </div>
+            </div>
+            <div class="terminal" id="terminal">
+                <div class="log-entry"><span class="log-time">00:00:00</span> <span class="log-info">Waiting for backend connection...</span></div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // State
+        const devices = new Map();
+        let autoScroll = true;
+        let ws;
+
+        // DOM Elements
+        const grid = document.getElementById('device-grid');
+        const emptyState = document.getElementById('empty-state');
+        const deviceCount = document.getElementById('device-count');
+        const terminal = document.getElementById('terminal');
+        const wsStatus = document.getElementById('ws-status');
+        const wsStatusText = document.getElementById('ws-status-text');
+        
+        // Controls
+        document.getElementById('btn-clear-logs').addEventListener('click', () => {
+            terminal.innerHTML = '';
+        });
+        
+        const btnScroll = document.getElementById('btn-toggle-autoScroll');
+        btnScroll.addEventListener('click', () => {
+            autoScroll = !autoScroll;
+            if (autoScroll) {
+                btnScroll.textContent = 'Auto-Scroll: ON';
+                btnScroll.style.background = 'rgba(0,240,255,0.2)';
+                btnScroll.style.borderColor = 'rgba(0,240,255,0.4)';
+                scrollToBottom();
+            } else {
+                btnScroll.textContent = 'Auto-Scroll: OFF';
+                btnScroll.style.background = 'rgba(255,255,255,0.1)';
+                btnScroll.style.borderColor = 'rgba(255,255,255,0.2)';
+            }
+        });
+
+        // Initialize WebSocket
+        function connectWS() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            // Use local port 8080 for WS
+            const wsUrl = `${protocol}//${window.location.hostname}:8080/ws`;
+            
+            logToTerminal('info', `Attempting to connect to ${wsUrl}...`);
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                wsStatus.classList.remove('disconnected');
+                wsStatusText.textContent = 'Connected';
+                logToTerminal('success', 'WebSocket connected to backend.');
+            };
+
+            ws.onclose = () => {
+                wsStatus.classList.add('disconnected');
+                wsStatusText.textContent = 'Disconnected';
+                logToTerminal('error', 'WebSocket disconnected. Reconnecting in 3s...');
+                
+                devices.clear();
+                renderDevices();
+                
+                setTimeout(connectWS, 3000);
+            };
+
+            ws.onerror = (error) => {
+                logToTerminal('error', `WebSocket Error observed.`);
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleIncomingEvent(data);
+                } catch (e) {
+                    logToTerminal('error', `Failed to parse message: ${event.data}`);
+                }
+            };
+        }
+
+        function handleIncomingEvent(event) {
+            const { event_type, conn_id, mac, ip, port, data, message, level } = event;
+            
+            if (level && message) {
+                logToTerminal(level, message);
+            }
+
+            switch (event_type) {
+                case 'sync':
+                    devices.clear();
+                    if (data && data.length > 0) {
+                        data.forEach(d => {
+                            devices.set(d.conn_id, {
+                                mac: d.mac || 'Authenticating...',
+                                ip: d.ip,
+                                port: d.port,
+                                id: d.device_id,
+                                connectedAt: Date.now() - (d.uptime * 1000), // Approximate
+                                lastSeen: Date.now(),
+                                msgCount: d.msg_count || 0
+                            });
+                        });
+                    }
+                    renderDevices();
+                    break;
+                case 'connect':
+                    devices.set(conn_id, {
+                        mac: 'Authenticating...',
+                        ip: ip,
+                        port: port,
+                        id: null,
+                        connectedAt: Date.now(),
+                        lastSeen: Date.now(),
+                        msgCount: 0
+                    });
+                    renderDevices();
+                    break;
+                case 'auth_success':
+                    if (devices.has(conn_id)) {
+                        const d = devices.get(conn_id);
+                        d.mac = mac;
+                        d.id = data?.device_id;
+                        updateDeviceCard(conn_id, d);
+                    }
+                    break;
+                case 'disconnect':
+                    if (devices.has(conn_id)) {
+                        devices.delete(conn_id);
+                        renderDevices();
+                    }
+                    break;
+                case 'data':
+                case 'ping':
+                    if (devices.has(conn_id)) {
+                        const d = devices.get(conn_id);
+                        d.lastSeen = Date.now();
+                        d.msgCount++;
+                        updateDeviceCard(conn_id, d);
+                        triggerPulse(conn_id);
+                    }
+                    break;
+            }
+        }
+
+        function renderDevices() {
+            deviceCount.textContent = devices.size;
+            
+            if (devices.size === 0) {
+                grid.innerHTML = '';
+                grid.appendChild(emptyState);
+                return;
+            }
+
+            if (emptyState.parentNode === grid) {
+                grid.removeChild(emptyState);
+            }
+
+            const currentIds = Array.from(devices.keys());
+            
+            Array.from(grid.children).forEach(child => {
+                if (child.id !== 'empty-state') {
+                    const cid = child.getAttribute('data-cid');
+                    if (!currentIds.includes(cid)) {
+                        grid.removeChild(child);
+                    }
+                }
+            });
+
+            currentIds.forEach(cid => {
+                let card = grid.querySelector(`[data-cid="${cid}"]`);
+                if (!card) {
+                    card = document.createElement('div');
+                    card.className = 'device-card';
+                    card.setAttribute('data-cid', cid);
+                    grid.appendChild(card);
+                }
+                updateDeviceCard(cid, devices.get(cid));
+            });
+        }
+
+        function updateDeviceCard(cid, device) {
+            const card = grid.querySelector(`[data-cid="${cid}"]`);
+            if (!card) return;
+
+            const uptime = Math.floor((Date.now() - device.connectedAt) / 1000);
+            const m = Math.floor(uptime / 60);
+            const s = uptime % 60;
+            const uptimeStr = `${m}m ${s}s`;
+            
+            const lastSeenSeconds = Math.floor((Date.now() - device.lastSeen) / 1000);
+
+            card.innerHTML = `
+                <div class="device-header">
+                    <span class="device-mac">${device.mac}</span>
+                    <span class="device-ip">${device.ip}:${device.port}</span>
+                </div>
+                <div class="device-stats">
+                    <div class="stat-row">
+                        <span class="stat-label">Device ID</span>
+                        <span class="stat-val">${device.id !== null ? '#' + device.id : '--'}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Uptime</span>
+                        <span class="stat-val">${uptimeStr}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Last Seen</span>
+                        <span class="stat-val">${lastSeenSeconds < 2 ? 'Just now' : lastSeenSeconds + 's ago'}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Messages</span>
+                        <span class="stat-val">
+                            ${device.msgCount} 
+                            <span class="pulse-indicator" id="pulse-${cid.replace(/[^a-zA-Z0-9]/g, '-')}"></span>
+                        </span>
+                    </div>
+                </div>
+            `;
+        }
+
+        function triggerPulse(cid) {
+            const safeId = cid.replace(/[^a-zA-Z0-9]/g, '-');
+            const indicator = document.getElementById(`pulse-${safeId}`);
+            if (indicator) {
+                indicator.classList.remove('active');
+                void indicator.offsetWidth; 
+                indicator.classList.add('active');
+                setTimeout(() => {
+                    indicator.classList.remove('active');
+                }, 300);
+            }
+        }
+
+        function formatTime() {
+            const now = new Date();
+            const pad = (n) => n.toString().padStart(2, '0');
+            return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+        }
+
+        function logToTerminal(level, message) {
+            const el = document.createElement('div');
+            el.className = 'log-entry';
+            
+            let levelClass = 'log-info';
+            if (level === 'error') levelClass = 'log-error';
+            else if (level === 'warn') levelClass = 'log-warn';
+            else if (level === 'success' || level === 'connect') levelClass = 'log-connect';
+            else if (level === 'disconnect') levelClass = 'log-disconnect';
+            else if (level === 'data') levelClass = 'log-data';
+
+            el.innerHTML = `<span class="log-time">${formatTime()}</span> <span class="${levelClass}">${escapeHtml(message)}</span>`;
+            terminal.appendChild(el);
+
+            if (terminal.children.length > 500) {
+                terminal.removeChild(terminal.firstChild);
+            }
+
+            if (autoScroll) {
+                scrollToBottom();
+            }
+        }
+        
+        function scrollToBottom() {
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        function escapeHtml(unsafe) {
+            return (unsafe || "").toString()
+                 .replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;")
+                 .replace(/"/g, "&quot;")
+                 .replace(/'/g, "&#039;");
+        }
+
+        setInterval(() => {
+            Array.from(devices.keys()).forEach(cid => {
+                updateDeviceCard(cid, devices.get(cid));
+            });
+        }, 1000);
+
+        connectWS();
+    </script>
+</body>
+</html>

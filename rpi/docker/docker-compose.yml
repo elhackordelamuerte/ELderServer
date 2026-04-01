@@ -78,6 +78,7 @@ services:
     ports:
       # Exposed on WiFi internal network ONLY
       - "192.168.10.1:9000:9000"
+      - "8080:8080"
     depends_on:
       - fastapi
     networks:
