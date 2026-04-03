@@ -265,6 +265,35 @@
             background: rgba(255, 255, 255, 0.4); 
         }
 
+        .credential-box {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 1.2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            border-left: 3px solid var(--primary);
+        }
+
+        .credential-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .password-hidden {
+            letter-spacing: 2px;
+        }
+        
+        .credential-help {
+            margin-top: 0.5rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+            padding-top: 1rem;
+        }
+
         .log-entry {
             margin-bottom: 4px;
             word-break: break-all;
@@ -342,8 +371,35 @@
     </header>
 
     <main>
-        <!-- Left Column: Devices -->
-        <div class="panel">
+        <!-- Left Column -->
+        <div style="display: flex; flex-direction: column; gap: 2rem;">
+            
+            <!-- RPi Credentials Panel -->
+            <div class="panel" id="credentials-panel" style="display: none;">
+                <div class="panel-header">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--primary); margin-right: 8px;"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><line x1="12" y1="20" x2="12.01" y2="20"></line></svg>
+                    RPi Hotspot Credentials
+                </div>
+                <div class="credential-box">
+                    <div class="credential-item">
+                        <span class="stat-label">SSID (Nom du réseau)</span>
+                        <span class="stat-val" id="rpi-ssid">...</span>
+                    </div>
+                    <div class="credential-item">
+                        <span class="stat-label">Mot de passe</span>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span class="stat-val password-hidden" id="rpi-password">••••••••</span>
+                            <button id="btn-toggle-password" style="padding: 4px 10px; font-size: 0.75rem;">Révéler</button>
+                        </div>
+                    </div>
+                    <div class="credential-help">
+                        Connectez votre téléphone au point d'accès de votre ESP32 en attente et naviguez vers <code>http://192.168.4.1/</code> pour le configurer avec ces informations.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Devices Panel -->
+            <div class="panel">
             <div class="panel-header">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--primary)"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>
                 Active Devices (<span id="device-count">0</span>)
@@ -356,6 +412,7 @@
                     <p>Awaiting incoming connections from ESP32 nodes...</p>
                 </div>
             </div>
+        </div>
         </div>
 
         <!-- Right Column: Terminal -->
@@ -389,6 +446,24 @@
         const terminal = document.getElementById('terminal');
         const wsStatus = document.getElementById('ws-status');
         const wsStatusText = document.getElementById('ws-status-text');
+        
+        let actualPassword = '';
+        let passwordRevealed = false;
+        const btnTogglePassword = document.getElementById('btn-toggle-password');
+        const rpiPasswordEl = document.getElementById('rpi-password');
+
+        btnTogglePassword.addEventListener('click', () => {
+            passwordRevealed = !passwordRevealed;
+            if (passwordRevealed) {
+                rpiPasswordEl.textContent = actualPassword;
+                rpiPasswordEl.classList.remove('password-hidden');
+                btnTogglePassword.textContent = 'Masquer';
+            } else {
+                rpiPasswordEl.textContent = '••••••••';
+                rpiPasswordEl.classList.add('password-hidden');
+                btnTogglePassword.textContent = 'Révéler';
+            }
+        });
         
         // Controls
         document.getElementById('btn-clear-logs').addEventListener('click', () => {
@@ -459,6 +534,11 @@
 
             switch (event_type) {
                 case 'sync':
+                    if (event.wifi) {
+                        document.getElementById('credentials-panel').style.display = 'flex';
+                        document.getElementById('rpi-ssid').textContent = event.wifi.ssid;
+                        actualPassword = event.wifi.password;
+                    }
                     devices.clear();
                     if (data && data.length > 0) {
                         data.forEach(d => {

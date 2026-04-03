@@ -254,9 +254,9 @@ void startSetupMode() {
 
 bool connectToWiFi() {
     logf("[WIFI] Connexion à %s...", wifiSSID.c_str());
-    WiFi.disconnect(true); // Clear saved config and any ongoing connection
-    delay(500);
     WiFi.mode(WIFI_STA);
+    WiFi.disconnect(); // Standard disconnect to avoid power-off
+    delay(100);
     WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 
     unsigned long start = millis();
@@ -388,6 +388,9 @@ void setup() {
     logf("\n╔══════════════════════════════════╗");
     logf("║      Eldersafe ESP32 Firmware    ║");
     logf("╚══════════════════════════════════╝");
+    
+    // Initialize WIFI to wake up hardware before getting MAC
+    WiFi.mode(WIFI_STA);
 
     deviceMAC = getMACFormatted();
     logf("[INFO] Adresse MAC : %s", deviceMAC.c_str());
@@ -412,11 +415,11 @@ void loop() {
 
     // --- Mode NORMAL ---
 
-    // Reconnexion WiFi si perdu
+    // Reconnexion WiFi si perdu ou non initialisé
     if (WiFi.status() != WL_CONNECTED) {
         socketConnected = false;
         socketClient.stop();
-        logf("[WIFI] Connexion perdue, tentative de reconnexion...");
+        logf("[WIFI] Déconnecté. Tentative de (re)connexion...");
 
         int retries = 0;
         while (WiFi.status() != WL_CONNECTED && retries < WIFI_RETRY_COUNT) {
@@ -425,8 +428,12 @@ void loop() {
         }
 
         if (WiFi.status() != WL_CONNECTED) {
-            logf("[WIFI] Impossible de se reconnecter. Attente 30s...");
-            delay(30000);
+            logf("[WIFI] ❌ Impossible de se connecter après %d essais.", WIFI_RETRY_COUNT);
+            logf("[WIFI] Les credentials sont potentiellement erronés.");
+            logf("[WIFI] Suppression des credentials et retour au mode SETUP.");
+            clearCredentials();
+            isProvisioned = false;
+            startSetupMode();
             return;
         }
     }

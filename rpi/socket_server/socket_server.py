@@ -25,6 +25,8 @@ SOCKET_HOST = "0.0.0.0"
 WEB_PORT = 8080
 WEB_HOST = "0.0.0.0"
 FASTAPI_BASE_URL = os.environ.get("FASTAPI_BASE_URL", "http://fastapi:8000")
+WIFI_SSID = os.environ.get("WIFI_SSID", "ELDERSAFE_SECURE")
+WIFI_PASSWORD = os.environ.get("WIFI_PASSWORD", "Eldersafe123!")
 READ_TIMEOUT = 60.0
 HEARTBEAT_INTERVAL = 30
 
@@ -156,7 +158,11 @@ async def init_web_app():
             
         await ws.send_json({
             "event_type": "sync",
-            "data": sync_payload
+            "data": sync_payload,
+            "wifi": {
+                "ssid": WIFI_SSID,
+                "password": WIFI_PASSWORD
+            }
         })
 
         try:
