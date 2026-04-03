@@ -14,7 +14,7 @@ A complete, distributed IoT system for monitoring elderly residents using ESP32-
 
 ## System Requirements
 
-### Raspberry Pi
+### Raspberry Pi 
 - **Model**: Raspberry Pi 4 (2GB+ RAM recommended)
 - **OS**: Raspberry Pi OS (Lite or full)
 - **Storage**: 16GB microSD card or larger
@@ -67,7 +67,6 @@ The Raspberry Pi should boot with these services active:
 ```bash
 # Check service status
 sudo systemctl status eldersafe-setup-network.service
-sudo systemctl status eldersafe-provisioner.service  
 sudo systemctl status eldersafe-docker.service
 ```
 
@@ -76,9 +75,6 @@ View logs:
 ```bash
 # Network setup logs
 sudo journalctl -u eldersafe-setup-network.service -f
-
-# Provisioner logs
-sudo journalctl -u eldersafe-provisioner.service -f
 
 # Docker service logs
 sudo docker logs eldersafe-fastapi
@@ -95,20 +91,18 @@ When powered on without WiFi credentials (first boot):
 - Creates AP: `ELDERSAFE_SETUP_AABBCC` (last 6 MAC digits)
 - Opens HTTP server on 192.168.4.1
 
-### 2. Automatic Provisioning
+### 2. Manual Provisioning
 
-The RPI provisioner automatically:
-- Scans for ESP32 APs every 30 seconds
-- Detects unprovisioned devices
-- Temporarily suspends the local AP
-- Connects to the ESP32
-- Sends WiFi credentials via HTTP
-- Reboots the ESP32
+The RPI network is designed for stable connectivity. To provision a device:
+- Connect your phone/laptop to the ESP32's `ELDERSAFE_SETUP_XXXX` AP
+- Go to `http://192.168.4.1`
+- Enter the RPi WiFi credentials displayed on your dashboard
+- The ESP32 will reboot and connect permanently
 
 Device is provisioned when:
 - It connects to `ELDERSAFE_SECURE` WiFi
 - Socket server authenticates its MAC
-- First telemetry data arrives in  database
+- First telemetry data arrives in the database
 
 ### 3. Monitor Devices via API
 
@@ -135,7 +129,7 @@ curl http://127.0.0.1:8000/api/iot-devices/1/telemetry/latest?limit=10
 - **hostapd**: WiFi Access Point (SSID: `ELDERSAFE_SECURE`)
 - **dnsmasq**: DHCP server + DNS (192.168.10.10-249)
 - **setup_network.sh**: Network configuration (systemd-oneshot)
-- **provisioner.py**: Device auto-discovery and provisioning
+
 - **iptables**: NAT routing (Ethernet ↔ WiFi)
 
 ### Docker Services
@@ -188,17 +182,7 @@ sudo /usr/sbin/dnsmasq -C /etc/eldersafe/dnsmasq/dnsmasq.conf
 
 ### ESP32 Won't Provision
 
-1. Check provisioner is running:
-   ```bash
-   ps aux | grep provisioner.py
-   ```
-
-2. Check provisioner logs:
-   ```bash
-   sudo journalctl -u eldersafe-provisioner.service -f
-   ```
-
-3. Ensure hostapd is running:
+1. Ensure hostapd is running:
    ```bash
    ps aux | grep hostapd
    ```
@@ -256,8 +240,7 @@ eldersafe/
 │   ├── hostapd/
 │   │   ├── hostapd.conf                 # WiFi AP config
 │   │   └── dnsmasq.conf                 # DHCP config
-│   ├── provisioning/
-│   │   └── provisioner.py               # Device auto-discovery
+│   
 │   ├── socket_server/
 │   │   ├── socket_server.py             # TCP server (asyncio)
 │   │   ├── requirements.txt

@@ -8,8 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from .database import init_db
-from .routes_iot_devices import router as iot_router
+from database import init_db
+from routes_iot_devices import router as iot_router
 
 # Initialize database on startup
 @asynccontextmanager

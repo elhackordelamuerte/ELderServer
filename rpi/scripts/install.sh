@@ -129,26 +129,7 @@ if [ -f "$REPO_ROOT/rpi/scripts/setup_network.sh" ]; then
     log "✓ setup_network.sh copié et rendu exécutable"
 fi
 
-if [ -f "$REPO_ROOT/rpi/provisioning/provisioner.py" ]; then
-    cp "$REPO_ROOT/rpi/provisioning/provisioner.py" "$ELDERSAFE_DIR/provisioner.py"
-    chmod 755 "$ELDERSAFE_DIR/provisioner.py"
-    log "✓ provisioner.py copié et rendu exécutable"
-fi
 
-
-# --- Copier et rendre exécutables les scripts ---
-log "📝 Copie des scripts..."
-if [ -f "$REPO_ROOT/rpi/scripts/setup_network.sh" ]; then
-    cp "$REPO_ROOT/rpi/scripts/setup_network.sh" "$ELDERSAFE_DIR/setup_network.sh"
-    chmod 755 "$ELDERSAFE_DIR/setup_network.sh"
-    log "✓ setup_network.sh copié et rendu exécutable"
-fi
-
-if [ -f "$REPO_ROOT/rpi/provisioning/provisioner.py" ]; then
-    cp "$REPO_ROOT/rpi/provisioning/provisioner.py" "$ELDERSAFE_DIR/provisioner.py"
-    chmod 755 "$ELDERSAFE_DIR/provisioner.py"
-    log "✓ provisioner.py copié et rendu exécutable"
-fi
 
 # --- Créer les services systemd ---
 log "⚙️  Création des services systemd..."
@@ -172,26 +153,6 @@ StandardInput=null
 WantedBy=multi-user.target
 EOF
 
-# Service: eldersafe-provisioner (scan ESP32 & provision)
-cat > /etc/systemd/system/eldersafe-provisioner.service << EOF
-[Unit]
-Description=Eldersafe - Provisioner (WiFi setup for ESP32)
-After=eldersafe-setup-network.service
-PartOf=docker.service
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/python3 $ELDERSAFE_DIR/provisioner.py
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-User=root
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-[Install]
-WantedBy=multi-user.target
-EOF
 
 # Service: eldersafe-docker (docker-compose)
 cat > /etc/systemd/system/eldersafe-docker.service << EOF
@@ -218,7 +179,6 @@ log "✓ Services systemd créés et rechargés"
 
 # --- Activer les services au démarrage ---
 systemctl enable eldersafe-setup-network.service
-systemctl enable eldersafe-provisioner.service
 systemctl enable eldersafe-docker.service
 
 log "✓ Services activés au démarrage"
@@ -226,8 +186,6 @@ log "✓ Services activés au démarrage"
 # --- Start immediately ---
 log "🚀 Démarrage des services..."
 systemctl start eldersafe-setup-network.service
-sleep 2
-systemctl start eldersafe-provisioner.service
 sleep 2
 systemctl start eldersafe-docker.service
 
@@ -256,8 +214,6 @@ log "║  Socket Server: $RPI_IP:$SOCKET_PORT              ║"
 log "║  MySQL interne: (172.20.0.2:3306)        ║"
 log "║                                           ║"
 log "║  Services:                                ║"
-log "║    • eldersafe-setup-network (boot)       ║"
-log "║    • eldersafe-provisioner (scan ESP32)   ║"
 log "║    • eldersafe-docker (containers)        ║"
 log "║                                           ║"
 log "║  Logs:                                    ║"
@@ -269,110 +225,4 @@ log ""
 
 log "Installation complète. Système prêt !"
 
-WIFI_SSID=$WIFI_SSID
-WIFI_PASSWORD=$WIFI_PASSWORD
-RPI_IP=$RPI_IP
-MYSQL_ROOT_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-MYSQL_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-MYSQL_USER=eldersafe
-MYSQL_DATABASE=eldersafe_db
-SOCKET_PORT=9000
-FASTAPI_PORT=8000
-EOF
-chmod 600 "$ELDERSAFE_DIR/.env"
 
-log "Credentials WiFi générés et sauvegardés dans $ELDERSAFE_DIR/.env"
-
-# --- Copier les configs ---
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-cp "$SCRIPT_DIR/../hostapd/hostapd.conf" "$ELDERSAFE_DIR/hostapd.conf.template"
-cp "$SCRIPT_DIR/../hostapd/dnsmasq.conf" "/etc/dnsmasq.d/eldersafe.conf"
-
-# Injecter le SSID dans le template
-sed -i "s/^ssid=.*/ssid=$WIFI_SSID/" "$ELDERSAFE_DIR/hostapd.conf.template"
-
-# --- Désactiver wpa_supplicant sur wlan0 (conflit avec hostapd) ---
-log "Configuration de wpa_supplicant pour ignorer wlan0..."
-mkdir -p /etc/wpa_supplicant
-cat > /etc/wpa_supplicant/wpa_supplicant-wlan0.conf << 'EOF'
-ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
-update_config=1
-EOF
-
-# --- Configurer systemd pour wlan0 IP statique ---
-mkdir -p /etc/systemd/network
-cat > /etc/systemd/network/10-wlan0-static.network << EOF
-[Match]
-Name=wlan0
-
-[Network]
-Address=${RPI_IP}/24
-EOF
-
-# --- Installer le service eldersafe-network ---
-cat > /etc/systemd/system/eldersafe-network.service << EOF
-[Unit]
-Description=Eldersafe - Configuration réseau WiFi
-After=network.target
-Before=eldersafe-provisioning.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/etc/eldersafe/scripts/setup_network.sh
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-mkdir -p /etc/eldersafe/scripts
-cp "$SCRIPT_DIR/setup_network.sh" /etc/eldersafe/scripts/
-chmod +x /etc/eldersafe/scripts/setup_network.sh
-
-systemctl daemon-reload
-systemctl enable eldersafe-network
-
-# --- Environnement Python pour le provisioning (hors Docker) ---
-log "Création de l'environnement Python pour le provisioning..."
-python3 -m venv /opt/eldersafe-provisioning
-/opt/eldersafe-provisioning/bin/pip install -q requests
-
-# --- Copier les scripts de provisioning ---
-cp -r "$SCRIPT_DIR/../provisioning" /opt/eldersafe-provisioning/app
-
-# --- Installer le service de provisioning ---
-cat > /etc/systemd/system/eldersafe-provisioning.service << EOF
-[Unit]
-Description=Eldersafe - Service de provisioning ESP32
-After=eldersafe-network.service docker.service
-Requires=eldersafe-network.service
-
-[Service]
-Type=simple
-User=root
-EnvironmentFile=$ELDERSAFE_DIR/.env
-ExecStart=/opt/eldersafe-provisioning/bin/python /opt/eldersafe-provisioning/app/provisioner.py
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable eldersafe-provisioning
-
-log ""
-log "=== Installation terminée ==="
-log "  SSID WiFi     : $WIFI_SSID"
-log "  Mot de passe  : $WIFI_PASSWORD"
-log "  IP du RPI     : $RPI_IP"
-log "  Config        : $ELDERSAFE_DIR/.env"
-log ""
-log "  Prochaine étape : cd docker && docker-compose up -d"
-log "  Puis redémarrer : sudo reboot"

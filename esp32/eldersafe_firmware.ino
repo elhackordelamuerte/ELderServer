@@ -42,7 +42,7 @@
 #define SOCKET_SERVER_PORT      9000
 #define SOCKET_CONNECT_TIMEOUT  10000
 #define WIFI_CONNECT_TIMEOUT_MS 15000
-#define WIFI_RETRY_COUNT        5
+#define WIFI_RETRY_COUNT        20
 #define DATA_INTERVAL_MS        5000
 #define PING_INTERVAL_MS        25000
 #define NVS_NAMESPACE           "eldersafe"
@@ -254,9 +254,11 @@ void startSetupMode() {
 
 bool connectToWiFi() {
     logf("[WIFI] Connexion à %s...", wifiSSID.c_str());
+    
+    // Properly stop any pending connection before starting a new one
+    WiFi.disconnect(true);
+    delay(500);
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect(); // Standard disconnect to avoid power-off
-    delay(100);
     WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 
     unsigned long start = millis();
