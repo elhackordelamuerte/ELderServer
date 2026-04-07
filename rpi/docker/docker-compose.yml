@@ -20,7 +20,7 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
       - mysql_data:/var/lib/mysql
-      - ../db/001_init_iot_tables.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      # - ../db/001_init_iot_tables.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
     ports:
       - "127.0.0.1:3306:3306"    # Local only (not on WiFi network)
     healthcheck:
@@ -58,7 +58,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
+      start_period: 120s
     logging:
       driver: "json-file"
       options:

@@ -1,0 +1,9 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+sqlalchemy[asyncio]==2.0.23
+aiomysql==0.2.0
+pydantic==2.5.0
+python-dotenv==1.0.0
+httpx==0.25.2
+# cryptography retiré : non utilisé directement par l'API
+# Si nécessaire, utiliser cryptography>=41 qui a des wheels ARM64 précompilées

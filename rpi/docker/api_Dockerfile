@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Pas de apt-get : toutes les dépendances ont des wheels précompilées
-# gcc/libssl-dev/libffi-dev inutiles pour les versions épinglées
+# gcc/libssl-dev/libffi-dev ne sont pas nécessaires pour les versions épinglées
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

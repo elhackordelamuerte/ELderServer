@@ -374,8 +374,15 @@ void handleServerMessage() {
     } else if (type == "ack") {
         logf("[SOCKET] ACK données.");
     } else if (type == "command") {
-        // Traiter les commandes du serveur (future feature)
         logf("[SOCKET] Commande reçue : %s", raw.c_str());
+        String cmd = msg["cmd"] | "";
+        if (cmd == "ping") {
+            sendPing();
+        } else if (cmd == "restart") {
+            logf("[SOCKET] Redémarrage forcé par le serveur !");
+            delay(1000);
+            ESP.restart();
+        }
     }
 }
 
