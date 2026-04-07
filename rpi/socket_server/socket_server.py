@@ -167,7 +167,18 @@ async def init_web_app():
 
         try:
             async for msg in ws:
-                pass # We don't expect messages from dashboard yet
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        if data.get("action") == "command":
+                            conn_id = data.get("conn_id")
+                            cmd = data.get("cmd")
+                            if conn_id in esp32_connections:
+                                conn = esp32_connections[conn_id]
+                                await conn.send({"type": "command", "cmd": cmd})
+                                emit_event("info", conn, f"Sent command '{cmd}' to device", "info")
+                    except Exception as e:
+                        log.error(f"WS rx error: {e}")
         finally:
             active_ws_clients.discard(ws)
             log.info("Dashboard WS Client disconnected.")

@@ -667,6 +667,11 @@
                         </span>
                     </div>
                 </div>
+                <!-- Troubleshooting Controls -->
+                <div style="margin-top: 1.5rem; display: flex; gap: 10px;">
+                    <button onclick="sendCommand('${cid}', 'ping')" style="flex:1; background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.3); color: var(--success);">Ping</button>
+                    <button onclick="sendCommand('${cid}', 'restart')" style="flex:1; background: rgba(255, 0, 60, 0.1); border-color: rgba(255, 0, 60, 0.3); color: var(--accent);">Restart</button>
+                </div>
             `;
         }
 
@@ -680,6 +685,19 @@
                 setTimeout(() => {
                     indicator.classList.remove('active');
                 }, 300);
+            }
+        }
+
+        function sendCommand(cid, cmd) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    action: 'command',
+                    conn_id: cid,
+                    cmd: cmd
+                }));
+                logToTerminal('info', `Sending ${cmd} command to device...`);
+            } else {
+                logToTerminal('error', 'WebSocket not connected. Cannot send command.');
             }
         }
 
